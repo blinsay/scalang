@@ -36,4 +36,18 @@ class EpmdSpec extends SpecificationWithJUnit {
       epmdQuery.close
     }
   }
+
+  "Epmd with a bad connection" should {
+    "retry correctly" in {
+      fail("Not tested yet")
+    }
+
+    "log errors while retrying" in {
+      fail("Not tested yet")
+    }
+
+    "die after a maximum number of retries" in {
+      fail("Not tested yet")
+    }
+  }
 }
