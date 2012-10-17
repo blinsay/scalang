@@ -28,14 +28,15 @@ case class EpmdConfig(
     port: Int,
     connectOnInit: Boolean = true,
     retries: Option[Int] = Some(Epmd.defaultRetries),
-    retryInterval: Option[Int] = None,
+    retryInterval: Option[Double] = None,
     connectionTimeout: Option[Int] = None
 )
 
 object Epmd extends Logging {
+  private val futurePollingInterval = 100 /* nanos */
   val defaultPort = 4369
   val defaultRetries = 3
-  val defaultRetryInterval = 5 /*seconds*/
+  val defaultRetryInterval = 5.0 /*seconds*/
   val defaultConnectionTimeout = 5 /*seconds*/
 
   lazy val bossPool = ThreadPool.instrumentedElastic("scalang.epmd", "boss", 1, 20)
@@ -51,24 +52,39 @@ object Epmd extends Logging {
 
   def apply(cfg: EpmdConfig): Epmd = {
     val epmd = new Epmd(cfg.host, cfg.port, cfg.connectionTimeout)
-
     if (cfg.connectOnInit) {
-      epmd.connect
-      Thread.sleep(5) /*TODO: Is there a cleaner way?*/
+      connectWithRetries(epmd, cfg)
+    }
+    epmd
+  }
 
-      if (cfg.retries.isDefined) {
-        val retries = cfg.retries.get
-        val retryInterval = cfg.retryInterval.getOrElse(defaultRetryInterval)
+  def connectWithRetries(epmd: Epmd, cfg: EpmdConfig) {
+    var future = epmd.connect
+    while (!future.isDone) {
+      Thread.sleep(futurePollingInterval)
+    }
 
-        var numRetries = 0
-        while (!epmd.connected && numRetries < retries) {
-          log.warn("epmd connection failed. Retrying in %d seconds", retryInterval)
-          Thread.sleep(retryInterval * 1000)
-          epmd.connect
+    if (cfg.retries.isDefined) {
+      val retries = cfg.retries.get
+
+      val retryInterval = cfg.retryInterval.getOrElse(defaultRetryInterval)
+      val retryIntervalMillis = (retryInterval * 1000.0).toInt
+
+      var numRetries = 0
+      while (!epmd.connected && numRetries < retries) {
+        // Retry the connection
+        if (!future.isSuccess) {
+          log.warn("epmd connection failed. Retrying in %.1f seconds", retryInterval)
+          Thread.sleep(retryIntervalMillis)
+          future = epmd.connect
+          numRetries += 1
+        }
+        // Poll the future
+        while (!future.isDone) {
+          Thread.sleep(futurePollingInterval)
         }
       }
     }
-    epmd
   }
 }
 
@@ -98,7 +114,7 @@ class Epmd(val host : String, val port : Int, val defaultTimeout: Option[Int] = 
     }
   }
 
-  def connect: Epmd = {
+  def connect: ChannelFuture = {
     val connectFuture = bootstrap.connect(new InetSocketAddress(host, port))
     connectFuture.addListener(new ChannelFutureListener {
       def operationComplete(future: ChannelFuture) {
@@ -109,7 +125,7 @@ class Epmd(val host : String, val port : Int, val defaultTimeout: Option[Int] = 
         }
       }
     })
-    this
+    connectFuture
   }
 
   def connectBlocking: Epmd = {
